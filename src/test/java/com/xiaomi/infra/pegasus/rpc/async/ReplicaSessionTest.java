@@ -218,7 +218,7 @@ public class ReplicaSessionTest {
     ReplicaSession rs = manager.getReplicaSession(addr);
 
     // no pending RequestEntry, ensure no NPE thrown
-    Assert.assertTrue(rs.pendingResponse.isEmpty());
+    Assert.assertTrue(rs.pendingResponses.isEmpty());
     try {
       rs.tryNotifyFailureWithSeqID(100, error_code.error_types.ERR_TIMEOUT, false);
     } catch (Exception e) {
@@ -233,7 +233,7 @@ public class ReplicaSessionTest {
     entry.callback = () -> passed.set(true);
     entry.timeoutTask = null; // simulate the timeoutTask has been null
     entry.op = new rrdb_put_operator(new gpid(1, 1), null, null, 0);
-    rs.pendingResponse.put(100, entry);
+    rs.pendingResponses.put(100, entry);
     rs.tryNotifyFailureWithSeqID(100, error_code.error_types.ERR_TIMEOUT, false);
     Assert.assertTrue(passed.get());
 

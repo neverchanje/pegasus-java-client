@@ -63,24 +63,11 @@ public class ReplicaSession {
     this.firstRecentTimedOutMs = new AtomicLong(0);
   }
 
-  // You can specify a message response filter with constructor or with "setMessageResponseFilter"
-  // function.
-  // the mainly usage of filter is test, in which you can control whether to abaondon a response
-  // and how to abandon it, so as to emulate some network failure cases
-  public ReplicaSession(
-      rpc_address address,
-      EventLoopGroup rpcGroup,
-      int socketTimeout,
-      MessageResponseFilter filter) {
-    this(address, rpcGroup, socketTimeout);
-    this.filter = filter;
-  }
-
   public void setMessageResponseFilter(MessageResponseFilter filter) {
     this.filter = filter;
   }
 
-  public int asyncSend(
+  public void asyncSend(
       client_operator op,
       Runnable callbackFunc,
       long timeoutInMilliseconds,
@@ -89,10 +76,10 @@ public class ReplicaSession {
     entry.sequenceId = seqId.getAndIncrement();
     entry.op = op;
     entry.callback = callbackFunc;
-    // NOTICE: must make sure the msg is put into the pendingResponse map BEFORE
+    // NOTICE: must make sure the msg is put into `pendingResponses` BEFORE
     // the timer task is scheduled.
-    pendingResponse.put(entry.sequenceId, entry);
-    entry.timeoutTask = addTimer(entry.sequenceId, timeoutInMilliseconds);
+    pendingResponses.put(entry.sequenceId, entry);
+    entry.timeoutTask = addTimeoutTicker(entry.sequenceId, timeoutInMilliseconds);
     entry.timeoutMs = timeoutInMilliseconds;
     entry.isBackupRequest = isBackupRequest;
 
@@ -114,7 +101,6 @@ public class ReplicaSession {
       }
       tryConnect();
     }
-    return entry.sequenceId;
   }
 
   public void closeSession() {
@@ -144,7 +130,7 @@ public class ReplicaSession {
   }
 
   public RequestEntry getAndRemoveEntry(int seqID) {
-    return pendingResponse.remove(seqID);
+    return pendingResponses.remove(seqID);
   }
 
   public final String name() {
@@ -221,7 +207,7 @@ public class ReplicaSession {
 
       while (!pendingSend.isEmpty()) {
         RequestEntry e = pendingSend.poll();
-        if (pendingResponse.get(e.sequenceId) != null) {
+        if (pendingResponses.get(e.sequenceId) != null) {
           write(e, newCache);
         } else {
           logger.info("{}: {} is removed from pending, perhaps timeout", name(), e.sequenceId);
@@ -247,7 +233,7 @@ public class ReplicaSession {
             tryNotifyFailureWithSeqID(e.sequenceId, error_types.ERR_SESSION_RESET, false);
           }
           List<RequestEntry> l = new LinkedList<RequestEntry>();
-          for (Map.Entry<Integer, RequestEntry> entry : pendingResponse.entrySet()) {
+          for (Map.Entry<Integer, RequestEntry> entry : pendingResponses.entrySet()) {
             l.add(entry.getValue());
           }
           for (RequestEntry e : l) {
@@ -275,13 +261,7 @@ public class ReplicaSession {
   // Notify the RPC sender if failure occurred.
   void tryNotifyFailureWithSeqID(int seqID, error_types errno, boolean isTimeoutTask)
       throws Exception {
-    logger.debug(
-        "{}: {} is notified with error {}, isTimeoutTask {}",
-        name(),
-        seqID,
-        errno.toString(),
-        isTimeoutTask);
-    RequestEntry entry = pendingResponse.remove(seqID);
+    RequestEntry entry = pendingResponses.remove(seqID);
     if (entry != null) {
       if (!isTimeoutTask && entry.timeoutTask != null) {
         entry.timeoutTask.cancel(true);
@@ -341,17 +321,13 @@ public class ReplicaSession {
 
   // Notify the RPC caller when times out. If the RPC finishes in time,
   // this task will be cancelled.
-  // TODO(wutao1): call it addTimeoutTicker
-  private ScheduledFuture<?> addTimer(final int seqID, long timeoutInMillseconds) {
+  private ScheduledFuture<?> addTimeoutTicker(int seqID, long timeoutInMillseconds) {
     return rpcGroup.schedule(
-        new Runnable() {
-          @Override
-          public void run() {
-            try {
-              tryNotifyFailureWithSeqID(seqID, error_types.ERR_TIMEOUT, true);
-            } catch (Exception e) {
-              logger.warn("try notify with sequenceID {} exception!", seqID, e);
-            }
+        () -> {
+          try {
+            tryNotifyFailureWithSeqID(seqID, error_types.ERR_TIMEOUT, true);
+          } catch (Exception e) {
+            logger.warn("try notify with sequenceID {} exception!", seqID, e);
           }
         },
         timeoutInMillseconds,
@@ -405,7 +381,7 @@ public class ReplicaSession {
 
   MessageResponseFilter filter = null;
 
-  final ConcurrentHashMap<Integer, RequestEntry> pendingResponse =
+  final ConcurrentHashMap<Integer, RequestEntry> pendingResponses =
       new ConcurrentHashMap<Integer, RequestEntry>();
   private final AtomicInteger seqId = new AtomicInteger(0);
 
